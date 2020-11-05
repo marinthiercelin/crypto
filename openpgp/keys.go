@@ -459,11 +459,13 @@ func addSubkey(e *Entity, packets *packet.Reader, pub *packet.PublicKey, priv *p
 		if sig.SigType != packet.SigTypeSubkeyBinding && sig.SigType != packet.SigTypeSubkeyRevocation {
 			return errors.StructuralError("subkey signature with wrong type")
 		}
-
+		println("keys462")
 		if err := e.PrimaryKey.VerifyKeySignature(subKey.PublicKey, sig); err != nil {
-			return errors.StructuralError("subkey signature invalid: " + err.Error())
+			println("keys465")
+			// return errors.StructuralError("subkey signature invalid: " + err.Error())
+			return errors.StructuralError("subkey signature invalid")
 		}
-
+		println("keys466")
 		switch sig.SigType {
 		case packet.SigTypeSubkeyRevocation:
 			subKey.Sig = sig

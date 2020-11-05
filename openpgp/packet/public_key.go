@@ -5,18 +5,17 @@
 package packet
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/dsa"
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	"crypto/sha1"
-	"crypto/sha256"
-	_ "crypto/sha512"
 	"encoding/binary"
 	"fmt"
 	"hash"
 	"io"
 	"math/big"
+	"os"
 	"strconv"
 	"time"
 
@@ -28,7 +27,17 @@ import (
 	"golang.org/x/crypto/openpgp/internal/ecc"
 	"golang.org/x/crypto/openpgp/internal/encoding"
 	"golang.org/x/crypto/rsa"
+	sha1 "golang.org/x/crypto/sha1"
+	sha256 "golang.org/x/crypto/sha256"
+	sha512 "golang.org/x/crypto/sha512"
 )
+
+func init() {
+	fmt.Println("init packet")
+	crypto.RegisterHash(crypto.SHA1, sha1.New)
+	crypto.RegisterHash(crypto.SHA256, sha256.New)
+	crypto.RegisterHash(crypto.SHA512, sha512.New)
+}
 
 type kdfHashFunction byte
 type kdfAlgorithm byte
@@ -233,18 +242,22 @@ func (pk *PublicKey) parse(r io.Reader) (err error) {
 func (pk *PublicKey) setFingerprintAndKeyId() {
 	// RFC 4880, section 12.2
 	if pk.Version == 5 {
-		fingerprint := sha256.New()
-		pk.SerializeForHash(fingerprint)
+		buffer := new(bytes.Buffer)
+		pk.SerializeForHash(buffer)
 		pk.Fingerprint = make([]byte, 32)
-		copy(pk.Fingerprint, fingerprint.Sum(nil))
+		h := sha256.Sum256(buffer.Bytes())
+		copy(pk.Fingerprint, h[:])
 		pk.KeyId = binary.BigEndian.Uint64(pk.Fingerprint[:8])
 	} else {
-		fingerprint := sha1.New()
-		pk.SerializeForHash(fingerprint)
+		buffer := new(bytes.Buffer)
+		pk.SerializeForHash(buffer)
 		pk.Fingerprint = make([]byte, 20)
-		copy(pk.Fingerprint, fingerprint.Sum(nil))
+		h := sha1.Sum(buffer.Bytes())
+		copy(pk.Fingerprint, h[:])
 		pk.KeyId = binary.BigEndian.Uint64(pk.Fingerprint[12:20])
 	}
+	fmt.Printf("keyid: %x\n", pk.KeyId)
+	fmt.Printf("fingerprint: %x\n", pk.Fingerprint)
 }
 
 // parseRSA parses RSA public key material from the given Reader. See RFC 4880,
@@ -449,7 +462,9 @@ func (pk *PublicKey) parseEdDSA(r io.Reader) (err error) {
 // SerializeForHash serializes the PublicKey to w with the special packet
 // header format needed for hashing.
 func (pk *PublicKey) SerializeForHash(w io.Writer) error {
+	fmt.Println("pk415")
 	pk.SerializeSignaturePrefix(w)
+	fmt.Println("pk417")
 	return pk.serializeWithoutHeaders(w)
 }
 
@@ -457,9 +472,11 @@ func (pk *PublicKey) SerializeForHash(w io.Writer) error {
 // The prefix is used when calculating a signature over this public key. See
 // RFC 4880, section 5.2.4.
 func (pk *PublicKey) SerializeSignaturePrefix(w io.Writer) {
+	fmt.Println("pk462")
 	var pLength = pk.algorithmSpecificByteCount()
 	if pk.Version == 5 {
 		pLength += 10 // version, timestamp (4), algorithm, key octet count (4).
+		println("writing to hash 1")
 		w.Write([]byte{
 			0x9A,
 			byte(pLength >> 24),
@@ -467,10 +484,14 @@ func (pk *PublicKey) SerializeSignaturePrefix(w io.Writer) {
 			byte(pLength >> 8),
 			byte(pLength),
 		})
+		println("done writing")
 		return
 	}
 	pLength += 6
+	fmt.Println("pk475")
+	println("writing to hash 2")
 	w.Write([]byte{0x99, byte(pLength >> 8), byte(pLength)})
+	println("done writing")
 }
 
 func (pk *PublicKey) Serialize(w io.Writer) (err error) {
@@ -524,72 +545,106 @@ func (pk *PublicKey) algorithmSpecificByteCount() int {
 // serializeWithoutHeaders marshals the PublicKey to w in the form of an
 // OpenPGP public key packet, not including the packet header.
 func (pk *PublicKey) serializeWithoutHeaders(w io.Writer) (err error) {
+	// debug.PrintStack()
+	println("pk531")
 	t := uint32(pk.CreationTime.Unix())
+	println("writing to hash 3")
 	if _, err = w.Write([]byte{
 		byte(pk.Version),
 		byte(t >> 24), byte(t >> 16), byte(t >> 8), byte(t),
 		byte(pk.PubKeyAlgo),
 	}); err != nil {
+		println("pk538")
+		// println(err)
 		return
 	}
-
+	println("done writing")
+	println("pk540")
 	if pk.Version == 5 {
 		n := pk.algorithmSpecificByteCount()
+		println("writing to hash 5")
 		if _, err = w.Write([]byte{
 			byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n),
 		}); err != nil {
 			return
 		}
+		println("done writing")
 	}
-
+	println("pk549")
 	switch pk.PubKeyAlgo {
 	case PubKeyAlgoRSA, PubKeyAlgoRSAEncryptOnly, PubKeyAlgoRSASignOnly:
+		println("pk520")
+		println("writing to hash 6")
 		if _, err = w.Write(pk.n.EncodedBytes()); err != nil {
 			return
 		}
+		println("done writing")
+		println("pk524")
+		println("writing to hash 7")
 		_, err = w.Write(pk.e.EncodedBytes())
+		println("done writing")
+		println("pk526")
 		return
 	case PubKeyAlgoDSA:
+		println("pk529")
 		if _, err = w.Write(pk.p.EncodedBytes()); err != nil {
 			return
 		}
+		println("pk533")
 		if _, err = w.Write(pk.q.EncodedBytes()); err != nil {
 			return
 		}
+		println("pk536")
 		if _, err = w.Write(pk.g.EncodedBytes()); err != nil {
 			return
 		}
+		println("pk541")
 		_, err = w.Write(pk.y.EncodedBytes())
+		println("pk543")
 		return
 	case PubKeyAlgoElGamal:
+		println("pk546")
 		if _, err = w.Write(pk.p.EncodedBytes()); err != nil {
 			return
 		}
+		println("pk550")
 		if _, err = w.Write(pk.g.EncodedBytes()); err != nil {
 			return
 		}
+		println("pk554")
 		_, err = w.Write(pk.y.EncodedBytes())
+		println("pk556")
 		return
 	case PubKeyAlgoECDSA:
+		println("pk559")
 		if _, err = w.Write(pk.oid.EncodedBytes()); err != nil {
 			return
 		}
+		println("pk563")
 		_, err = w.Write(pk.p.EncodedBytes())
+		println("pk565")
 		return
 	case PubKeyAlgoECDH:
+		println("pk568")
 		if _, err = w.Write(pk.oid.EncodedBytes()); err != nil {
 			return
 		}
+		println("pk571")
 		if _, err = w.Write(pk.p.EncodedBytes()); err != nil {
 			return
 		}
+		println("pk576")
 		_, err = w.Write(pk.kdf.EncodedBytes())
+		println("pk578")
 		return
 	case PubKeyAlgoEdDSA:
+		println("pk581")
 		if _, err = w.Write(pk.oid.EncodedBytes()); err != nil {
 			return
 		}
+		println("pk585")
 		_, err = w.Write(pk.p.EncodedBytes())
+		println("pk587")
 		return
 	}
 	return errors.InvalidArgumentError("bad public-key algorithm")
@@ -603,29 +658,40 @@ func (pk *PublicKey) CanSign() bool {
 // VerifySignature returns nil iff sig is a valid signature, made by this
 // public key, of the data hashed into signed. signed is mutated by this call.
 func (pk *PublicKey) VerifySignature(signed hash.Hash, sig *Signature) (err error) {
+	println("pk647")
 	if !pk.CanSign() {
 		return errors.InvalidArgumentError("public key cannot generate signatures")
 	}
+	println("pk651")
 	if sig.Version == 5 && (sig.SigType == 0x00 || sig.SigType == 0x01) {
 		sig.AddMetadataToHashSuffix()
 	}
+	println("pk655")
+	println("writing to hash 8")
 	signed.Write(sig.HashSuffix)
+	println("done writing")
 	hashBytes := signed.Sum(nil)
+	fmt.Fprintf(os.Stderr, "h0 %x\n", hashBytes[0])
+	fmt.Fprintf(os.Stderr, "s0 %x\n", sig.HashTag[0])
+	fmt.Fprintf(os.Stderr, "h1 %x\n", hashBytes[1])
+	fmt.Fprintf(os.Stderr, "s1 %x\n", sig.HashTag[1])
 	if hashBytes[0] != sig.HashTag[0] || hashBytes[1] != sig.HashTag[1] {
 		return errors.SignatureError("hash tag doesn't match")
 	}
-
+	println("pk661")
 	if pk.PubKeyAlgo != sig.PubKeyAlgo {
 		return errors.InvalidArgumentError("public key and signature use different algorithms")
 	}
-
+	println("pk665")
 	switch pk.PubKeyAlgo {
 	case PubKeyAlgoRSA, PubKeyAlgoRSASignOnly:
+		println("pk668")
 		rsaPublicKey, _ := pk.PublicKey.(*rsa.PublicKey)
 		err = rsa.VerifyPKCS1v15(rsaPublicKey, sig.Hash, hashBytes, padToKeySize(rsaPublicKey, sig.RSASignature.Bytes()))
 		if err != nil {
 			return errors.SignatureError("RSA verification failure")
 		}
+		println("pk674")
 		return nil
 	case PubKeyAlgoDSA:
 		dsaPublicKey, _ := pk.PublicKey.(*dsa.PublicKey)
@@ -666,47 +732,68 @@ func (pk *PublicKey) VerifySignature(signed hash.Hash, sig *Signature) (err erro
 // keySignatureHash returns a Hash of the message that needs to be signed for
 // pk to assert a subkey relationship to signed.
 func keySignatureHash(pk, signed signingKey, hashFunc crypto.Hash) (h hash.Hash, err error) {
+	println("pk715")
 	if !hashFunc.Available() {
 		return nil, errors.UnsupportedError("hash function")
 	}
-	h = hashFunc.New()
-
+	println("pk719")
+	println("hash", hashFunc)
+	if hashFunc == crypto.SHA1 {
+		h = sha1.New()
+	} else if hashFunc == crypto.SHA256 {
+		h = sha256.New()
+	} else if hashFunc == crypto.SHA512 {
+		h = sha512.New()
+	} else {
+		h = hashFunc.New()
+	}
+	println("pk722")
 	// RFC 4880, section 5.2.4
 	err = pk.SerializeForHash(h)
 	if err != nil {
 		return nil, err
 	}
-
+	println("p728")
 	err = signed.SerializeForHash(h)
+	println("pk730")
 	return
 }
 
 // VerifyKeySignature returns nil iff sig is a valid signature, made by this
 // public key, of signed.
 func (pk *PublicKey) VerifyKeySignature(signed *PublicKey, sig *Signature) error {
+	println("pk737")
 	h, err := keySignatureHash(pk, signed, sig.Hash)
 	if err != nil {
 		return err
 	}
+	println("pk741")
 	if err = pk.VerifySignature(h, sig); err != nil {
+		println("pk744")
+		println(err.Error())
 		return err
 	}
-
+	println("pk747")
 	if sig.FlagSign {
 		// Signing subkeys must be cross-signed. See
 		// https://www.gnupg.org/faq/subkey-cross-certify.html.
+		println("pk751")
 		if sig.EmbeddedSignature == nil {
 			return errors.StructuralError("signing subkey is missing cross-signature")
 		}
+		println("pk755")
 		// Verify the cross-signature. This is calculated over the same
 		// data as the main signature, so we cannot just recursively
 		// call signed.VerifyKeySignature(...)
+		println("pk759")
 		if h, err = keySignatureHash(pk, signed, sig.EmbeddedSignature.Hash); err != nil {
 			return errors.StructuralError("error while hashing for cross-signature: " + err.Error())
 		}
+		println("pk763")
 		if err := signed.VerifySignature(h, sig.EmbeddedSignature); err != nil {
 			return errors.StructuralError("error while verifying cross-signature: " + err.Error())
 		}
+		println("pk767")
 	}
 
 	return nil
@@ -750,7 +837,15 @@ func userIdSignatureHash(id string, pk *PublicKey, hashFunc crypto.Hash) (h hash
 	if !hashFunc.Available() {
 		return nil, errors.UnsupportedError("hash function")
 	}
-	h = hashFunc.New()
+	if hashFunc == crypto.SHA1 {
+		h = sha1.New()
+	} else if hashFunc == crypto.SHA256 {
+		h = sha256.New()
+	} else if hashFunc == crypto.SHA512 {
+		h = sha512.New()
+	} else {
+		h = hashFunc.New()
+	}
 
 	// RFC 4880, section 5.2.4
 	pk.SerializeSignaturePrefix(h)
@@ -762,9 +857,13 @@ func userIdSignatureHash(id string, pk *PublicKey, hashFunc crypto.Hash) (h hash
 	buf[2] = byte(len(id) >> 16)
 	buf[3] = byte(len(id) >> 8)
 	buf[4] = byte(len(id))
-	h.Write(buf[:])
-	h.Write([]byte(id))
 
+	println("writing to hash 9")
+	h.Write(buf[:])
+	println("done writing")
+	println("writing to hash 4")
+	h.Write([]byte(id))
+	println("done writing")
 	return
 }
 
